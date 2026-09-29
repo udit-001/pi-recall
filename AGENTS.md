@@ -16,7 +16,8 @@ list_threads → find_threads → peek_thread → search_thread
 ```
 
 `src/` is the pure logic and holds the tests: `prior.ts` carries the
-prior-thread rule, `thread-errors.ts` the wording of a failed lookup.
+prior-thread rule, `thread-errors.ts` the wording of a failed lookup, `scan.ts`
+the listing's second pass, `content.ts` the message-text extractor.
 Everything else is `index.ts`.
 
 Schemas, defaults, and result shapes: `docs/tools.md`. Reach for it when
@@ -35,10 +36,14 @@ agent cannot see from the result it gets back.
    id *and* file path because the two can disagree. `include_current` is the
    deliberate opt-in for the post-compaction re-read.
 
-2. **Listing is a 64KB head-scan.** `headScanSessionFile` reads
-   `HEAD_SCAN_BYTES` from the top of the file and stops; that bound is what
-   makes `list_threads` cheap enough to call freely. Full parses belong to the
-   reading path, where one thread's messages are needed.
+2. **Listing is a 64KB header pass, then a page pass.** `headScanSessionFile`
+   reads `HEAD_SCAN_BYTES` from the top of each file and stops, which is what
+   makes `list_threads` cheap enough to call freely: filtering, sorting, and
+   paginating need nothing more. The first user message sits *past* that window
+   in practice — a session's preamble (system prompt, skills, tool schemas) runs
+   120-225KB before it — so the rows a listing returns get a second read by
+   `firstUserPreview` in `src/scan.ts`, capped at `PREVIEW_MAX_BYTES`. Full
+   parses belong to the reading path, where one thread's messages are needed.
 
 3. **Reading follows the active branch.** A forked session is a tree. The leaf
    is the entry no other entry names as its `parentId`, and only the leaf path

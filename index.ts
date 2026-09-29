@@ -32,6 +32,8 @@ import {
 import { Text, Container, Spacer } from "@earendil-works/pi-tui";
 import { isRunningSession } from "./src/prior.ts";
 import { threadLookupError } from "./src/thread-errors.ts";
+import { extractTextContent } from "./src/content.ts";
+import { firstUserPreview } from "./src/scan.ts";
 
 // ============================================================================
 // Types
@@ -49,8 +51,20 @@ interface ThreadSummary {
 	/** Source path of the parent session, when this session was forked. */
 	parentSession?: string;
 	/** First user message (truncated), from the head window. */
-	preview: string;
+	/**
+	 * First user message, truncated. Undefined when the session's preamble runs
+	 * past the header scan's window — the listing fills these in for the page.
+	 */
+	preview?: string;
 	filePath: string;
+}
+
+/** Shown when a session's first user message is past what the scans will read. */
+const NO_PREVIEW = "(no user message)";
+
+/** A summary's preview for display, resolved or not. */
+function previewText(summary: ThreadSummary): string {
+	return summary.preview ?? NO_PREVIEW;
 }
 
 /** One extracted message on the active branch (reading module output). */
@@ -143,7 +157,7 @@ function headScanSessionFile(filePath: string): ThreadSummary | null {
 			modified: stat.mtime.toISOString(),
 			name,
 			parentSession: header.parentSession,
-			preview: preview ? preview.slice(0, 200) : "(no user message)",
+			preview: preview ? preview.slice(0, 200) : undefined,
 			filePath,
 		};
 	} catch {
@@ -215,36 +229,6 @@ function getEntryPath(entries: SessionEntry[]): SessionEntry[] {
 	}
 
 	return branchPath.reverse();
-}
-
-function extractTextContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		const parts: string[] = [];
-		for (const part of content) {
-			if (part.type === "text" && part.text) {
-				parts.push(part.text);
-			} else if (part.type === "toolCall" && part.name) {
-				parts.push(`[Tool: ${part.name}]`);
-			}
-		}
-		return parts.join("\n");
-	}
-	return "";
-}
-
-function getFirstUserMessage(entries: SessionEntry[]): string {
-	for (const entry of entries) {
-		if (entry.type === "message") {
-			// AgentMessage is a union; only some members carry text content.
-			const msg = entry.message as { role?: string; content?: unknown };
-			if (msg.role === "user") {
-				const text = extractTextContent(msg.content);
-				if (text) return text.slice(0, 200);
-			}
-		}
-	}
-	return "(no user message)";
 }
 
 /** Resolve a thread id or file path to a session file path. */
@@ -492,10 +476,18 @@ export default function (pi: ExtensionAPI) {
 
 			const total = summaries.length;
 			const page = summaries.slice(offset, offset + limit);
-			const elapsed = Date.now() - startTime;
 
-			let text = `Found ${total} prior threads (${elapsed}ms)`;
-			if (!params.include_current) text += " · running session excluded";
+			// Second pass, and only for the rows being returned: a session's
+			// preamble pushes its first user message past the header scan's
+			// window, so the cheap pass over every session cannot see it.
+			for (const s of page) {
+				if (s.preview === undefined) s.preview = firstUserPreview(s.filePath);
+			}
+
+			const elapsed = Date.now() - startTime;
+			const excluded = !params.include_current;
+			let text = `Found ${total} ${excluded ? "prior threads" : "threads"} (${elapsed}ms)`;
+			if (excluded) text += " · running session excluded";
 			text += "\n\n";
 			for (const s of page) {
 				text += `**${s.id}**${s.name ? ` — ${s.name}` : ""} (${formatDate(s.modified)})\n`;
@@ -503,7 +495,7 @@ export default function (pi: ExtensionAPI) {
 				if (s.parentSession) {
 					text += `  ·  🔀 forked from ${sessionIdFromPath(s.parentSession) ?? s.parentSession}`;
 				}
-				text += `\n  📝 ${snippet(s.preview, 120)}\n\n`;
+				text += `\n  📝 ${snippet(previewText(s), 120)}\n\n`;
 			}
 			if (total > offset + page.length) {
 				text += `Showing ${page.length} of ${total} — offset=${offset + page.length} for the next page.\n`;
@@ -543,14 +535,14 @@ export default function (pi: ExtensionAPI) {
 						new Text(theme.fg("accent", t.id) + theme.fg("dim", ` (${formatDate(t.modified)})`), 0, 0),
 					);
 					container.addChild(new Text(theme.fg("muted", `  📁 ${t.cwd}`), 0, 0));
-					container.addChild(new Text(theme.fg("toolOutput", `  📝 ${snippet(t.preview, 90)}`), 0, 0));
+					container.addChild(new Text(theme.fg("toolOutput", `  📝 ${snippet(previewText(t), 90)}`), 0, 0));
 				}
 				return container;
 			}
 
 			let text = `${icon} ${threads.length} of ${total} threads`;
 			for (const t of threads.slice(0, 3)) {
-				text += `\n  ${theme.fg("accent", t.id.slice(0, 8))} ${theme.fg("dim", formatDate(t.modified))} ${theme.fg("muted", snippet(t.preview, 50))}`;
+				text += `\n  ${theme.fg("accent", t.id.slice(0, 8))} ${theme.fg("dim", formatDate(t.modified))} ${theme.fg("muted", snippet(previewText(t), 50))}`;
 			}
 			if (threads.length > 3) {
 				text += `\n  ${theme.fg("muted", `... +${threads.length - 3} more (Ctrl+O to expand)`)}`;

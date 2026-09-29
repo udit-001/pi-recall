@@ -16,8 +16,10 @@ teammate's machine be read here.
 
 ## list_threads
 
-Reads session headers only, never a message body, so a listing stays cheap on a
-large history.
+Reads each session's header only, so filtering, sorting, and paginating stay
+cheap on a large history. The rows it returns then cost one deeper read each,
+for the first user message — which sits past the header window, behind the
+system prompt and tool schemas every session opens with.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
@@ -27,9 +29,10 @@ large history.
 | `offset` | number | `0` | Skip N threads; increment by the returned count |
 | `sort` | `"recent"` \| `"oldest"` | `"recent"` | By last-modified time |
 
-Each entry carries the thread ID, directory, first user message (truncated),
-and `parentSession` when the session was forked from another. The header line
-states the total and whether the running session was excluded.
+Each entry carries the thread ID, directory, first user message (truncated to
+200 characters), and `parentSession` when the session was forked from another.
+The header line states the total, calls the entries *prior threads* when the
+running session was left out, and says so.
 
 ## find_threads
 
